@@ -1,0 +1,33 @@
+name: Selective tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/index.json
+          key: selective-index-v2-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            selective-index-v2-${{ runner.os }}-${{ github.ref_name }}-
+            selective-index-v2-${{ runner.os }}-
+
+      - run: python -m pip install -r requirements.txt
+
+      - name: Run related tests
+        run: bash scripts/test-selective.sh
+        env:
+          SELECTIVE_TEST_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
