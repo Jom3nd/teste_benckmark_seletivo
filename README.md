@@ -15,6 +15,8 @@ python -m pytest
 - Indexação AST dos arquivos Python em `src/` e `tests/`, incluindo imports absolutos e relativos.
 - Grafo direcionado de imports e grafo reverso para descobrir quem depende de um módulo alterado.
 - Busca em largura pelos dependentes e explicação textual do caminho até cada teste selecionado.
+- Grafo de dependências construído como `networkx.DiGraph` e visualização HTML interativa automática via PyVis durante execuções `indexed` e `selective`.
+- Exportação em PNG, DOT, JSON e GraphML para visualização ou integração com outras ferramentas.
 - Execução seletiva com pytest, com execução completa de fallback quando a seleção não é confiável.
 - Índice JSON persistente e versionado, carregado em mapas Python para consultas rápidas.
 - Modos de execução completa, análise AST sem cache, consulta indexada e benchmark comparativo.
@@ -32,6 +34,8 @@ O índice também guarda nomes de classes e funções encontrados pela AST. A se
 
 As alterações são filtradas para `.py`; uma mudança isolada em documentação ou configuração não resulta em uma seleção vazia silenciosa: o fallback executa a suíte completa.
 
+Por padrão, os modos `indexed` e `selective` usam NetworkX para construir o `DiGraph` e PyVis para renderizar `.cache/dependency-graph.html`. Abra o HTML em um navegador: é possível ampliar, mover a visualização, arrastar nós e filtrar entre `Source` e `Tests`; passe o cursor sobre um nó para ver o caminho completo do arquivo. O JavaScript da visualização fica embutido no HTML, então não é necessário acessar CDN. Arquivos de teste aparecem como quadrados amarelos e arquivos de produção como pontos azuis. As arestas apontam do importador para a dependência (`arquivo -> arquivo importado`), enquanto a seleção percorre o grafo no sentido inverso. O relatório mostra a quantidade de nós e arestas e o local do arquivo gerado.
+
 ## Uso
 
 Passe uma branch ou SHA disponível localmente como base do diff:
@@ -47,6 +51,8 @@ Opções disponíveis:
 - `--mode indexed`: carrega ou atualiza `.cache/index.json` e é o modo padrão.
 - `--mode benchmark`: compara os modos `full`, `selective` e `indexed`.
 - `--base-ref REF`: usa `REF...HEAD` para identificar mudanças de commit.
+- `--graph-output PATH`: altera o caminho do grafo exportado; padrão `.cache/dependency-graph.html`.
+- `--graph-format html|dot|json|graphml`: escolhe o formato visual ou de intercâmbio; padrão `html`.
 - `--repeat N`: número de repetições do benchmark, no mínimo 1.
 - `--results DIR`: diretório para os resultados JSON e CSV do benchmark; padrão `benchmark/results`.
 
@@ -63,6 +69,15 @@ Ele usa `indexed` por padrão. Pode-se definir `SELECTIVE_TEST_BASE`, `SELECTIVE
 ```sh
 SELECTIVE_TEST_BASE=origin/main bash scripts/test-selective.sh
 ```
+
+O modo padrão já gera o HTML interativo. Para gerar JSON estruturado ou GraphML para abrir em ferramentas como Gephi:
+
+```sh
+python tools/analyzer.py --mode indexed --graph-format json --graph-output .cache/dependency-graph.json
+python tools/analyzer.py --mode indexed --graph-format graphml --graph-output .cache/dependency-graph.graphml
+```
+
+O formato DOT continua disponível para Graphviz. O modo `full` apenas executa pytest e não constrói o índice nem exporta o grafo.
 
 ## Índice incremental
 
@@ -96,6 +111,18 @@ python tools/generate_fixture.py --modules 100
 ```
 
 O gerador cria arquivos em `generated/`; esse diretório ainda não faz parte do escopo do indexador, que analisa `src/` e `tests/`.
+
+### Benchmark isolado com 10.000 testes
+
+`tools/benchmark_scale.py` cria um projeto sintético dentro de um diretório temporário, inicializa um repositório Git descartável e remove todo o fixture ao terminar. Não escreve em `src/`, `tests/` ou no índice do projeto. O teste compara a suíte completa, seleção com parse AST sem índice e seleção com índice incremental aquecido:
+
+```sh
+python tools/benchmark_scale.py --tests 10000 --test-files 100 --affected-files 10 --repeat 3
+```
+
+Parâmetros configuráveis: `--tests`, `--test-files`, `--affected-files` e `--repeat`. A medição atual usa casos distribuídos uniformemente em arquivos; uma alteração simulada afeta 10 dos 100 módulos de teste. A seleção opera por arquivo, não por caso individual.
+
+Na medição de referência em Windows, os tempos médios foram: suíte completa `7,45 s`; seleção sem índice `1,62 s`; seleção indexada e aquecida `1,35 s`. A construção inicial do índice levou `0,83 s`. Os modos seletivos executaram 1.000 dos 10.000 casos. Esses números descrevem somente este fixture e ambiente; a proporção de arquivos afetados, o custo dos testes, o sistema operacional e a frequência de reconstrução determinam o ganho em um projeto real. O primeiro índice é um custo de setup; os valores indexados representam atualizações posteriores.
 
 ## Limites e adaptação
 

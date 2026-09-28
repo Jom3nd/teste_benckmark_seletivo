@@ -12,6 +12,9 @@ import time
 from collections import deque
 from pathlib import Path, PurePosixPath
 
+import networkx as nx
+from pyvis.network import Network
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'src'
 TEST = ROOT / 'tests'
@@ -128,6 +131,92 @@ def _reverse_graph(dependencies):
     for dependency in imported:
       reverse.setdefault(dependency, set()).add(importer)
   return reverse
+
+
+def build_dependency_graph(dependencies):
+  graph = nx.DiGraph()
+  for importer, imported in dependencies.items():
+    importer_kind = 'test' if importer.startswith('tests/') else 'source'
+    graph.add_node(
+      importer,
+      kind=importer_kind,
+      group='Tests' if importer_kind == 'test' else 'Source',
+      label=importer,
+      title=f'{importer_kind.title()} file: {importer}',
+      color='#f4b942' if importer_kind == 'test' else '#56b4d3',
+      shape='box' if importer_kind == 'test' else 'dot',
+    )
+    for dependency in imported:
+      dependency_kind = 'test' if dependency.startswith('tests/') else 'source'
+      graph.add_node(
+        dependency,
+        kind=dependency_kind,
+        group='Tests' if dependency_kind == 'test' else 'Source',
+        label=dependency,
+        title=f'{dependency_kind.title()} file: {dependency}',
+        color='#f4b942' if dependency_kind == 'test' else '#56b4d3',
+        shape='box' if dependency_kind == 'test' else 'dot',
+      )
+      graph.add_edge(importer, dependency)
+  return graph
+
+
+def _render_interactive_graph(graph, output_path):
+  heading = 'Python Dependency Graph'
+  network = Network(
+    height='100vh', width='100%', directed=True, bgcolor='#f7f9fc',
+    font_color='#17212b', cdn_resources='in_line', heading=heading,
+    select_menu=True, filter_menu=True,
+  )
+  network.from_nx(graph)
+  network.barnes_hut(
+    gravity=-8000, central_gravity=0.25, spring_length=170,
+    spring_strength=0.035, damping=0.12,
+  )
+  html = network.generate_html(notebook=False)
+  duplicate_heading = f'<center>\n<h1>{heading}</h1>\n</center>'
+  html = html.replace(duplicate_heading, '', 1)
+  output_path.write_text(html, encoding='utf-8')
+
+
+def export_dependency_graph(dependencies, output_path, graph_format='html'):
+  output_path = Path(output_path)
+  if not output_path.is_absolute():
+    output_path = ROOT / output_path
+  output_path.parent.mkdir(parents=True, exist_ok=True)
+
+  graph = build_dependency_graph(dependencies)
+  nodes = sorted(graph.nodes)
+  edges = sorted(graph.edges)
+
+  if graph_format == 'json':
+    graph = {
+      'directed': True,
+      'edge_direction': 'importer_to_dependency',
+      'nodes': [
+        {'id': node, 'kind': 'test' if node.startswith('tests/') else 'source'}
+        for node in nodes
+      ],
+      'edges': [{'from': importer, 'to': dependency} for importer, dependency in edges],
+    }
+    output_path.write_text(json.dumps(graph, indent=2), encoding='utf-8')
+  elif graph_format == 'dot':
+    identifiers = {node: f'node_{index}' for index, node in enumerate(nodes)}
+    lines = ['digraph dependencies {', '  rankdir=LR;', '  node [fontname="Arial"];']
+    for node in nodes:
+      shape = 'box' if node.startswith('tests/') else 'ellipse'
+      lines.append(f'  {identifiers[node]} [label={json.dumps(node)}, shape={shape}];')
+    for importer, dependency in edges:
+      lines.append(f'  {identifiers[importer]} -> {identifiers[dependency]};')
+    lines.append('}')
+    output_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+  elif graph_format == 'graphml':
+    nx.write_graphml(graph, output_path)
+  elif graph_format == 'html':
+    _render_interactive_graph(graph, output_path)
+  else:
+    raise ValueError(f'Unsupported graph format: {graph_format}')
+  return output_path, len(nodes), len(edges)
 
 
 def parse_all():
@@ -293,7 +382,7 @@ def run_tests(selected=None):
   return (time.perf_counter() - started) * 1000, result.returncode
 
 
-def one(mode, execute=True, base_ref=None):
+def one(mode, execute=True, base_ref=None, graph_output=None, graph_format='dot'):
   started = time.perf_counter()
   changed_paths = changed(base_ref)
   all_tests = [key(path) for path in TEST.rglob('test_*.py')]
@@ -301,6 +390,7 @@ def one(mode, execute=True, base_ref=None):
   analyzed = 0
   paths = {}
   fallback = None
+  graph_stats = None
 
   if mode == 'full':
     selected = all_tests
@@ -311,7 +401,10 @@ def one(mode, execute=True, base_ref=None):
     else:
       index, timings, analyzed = load_or_update_index()
       discovery_ms, ast_ms, graph_ms, index_ms = timings
+      dependencies = index['deps']
       reverse = index['rev']
+    if graph_output:
+      graph_stats = export_dependency_graph(dependencies, graph_output, graph_format)
     if changed_paths:
       selected, paths, selection_ms = select(reverse, changed_paths)
     else:
@@ -339,6 +432,9 @@ def one(mode, execute=True, base_ref=None):
     'selected': selected,
     'paths': paths,
     'fallback': fallback,
+    'graph_output': str(graph_stats[0]) if graph_stats else None,
+    'graph_nodes': graph_stats[1] if graph_stats else 0,
+    'graph_edges': graph_stats[2] if graph_stats else 0,
     'test_exit': test_exit,
   }
 
@@ -356,6 +452,11 @@ def report(result):
     f"tests_time={result['test_ms']:.3f}ms exit={result['test_exit']} "
     f"total={result['total_ms']:.3f}ms"
   )
+  if result['graph_output']:
+    print(
+      f"Dependency graph: {result['graph_output']} "
+      f"({result['graph_nodes']} nodes, {result['graph_edges']} edges)"
+    )
   for test in result['selected']:
     if test in result['paths']:
       print('Reason: ' + ' -> '.join(result['paths'][test]))
@@ -365,6 +466,14 @@ def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('--mode', choices=['full', 'selective', 'indexed', 'benchmark'], default='indexed')
   parser.add_argument('--base-ref', help='Git ref or commit SHA used as the diff base')
+  parser.add_argument(
+    '--graph-output', default='.cache/dependency-graph.html',
+    help='Path for the generated dependency graph (default: .cache/dependency-graph.html)'
+  )
+  parser.add_argument(
+    '--graph-format', choices=['html', 'dot', 'json', 'graphml'], default='html',
+    help='Export format for the dependency graph (default: interactive HTML)'
+  )
   parser.add_argument('--repeat', type=int, default=5)
   parser.add_argument('--results', default='benchmark/results')
   args = parser.parse_args(argv)
@@ -375,7 +484,11 @@ def main(argv=None):
   results = []
   for mode in modes:
     for _ in range(args.repeat if args.mode == 'benchmark' else 1):
-      results.append(one(mode, base_ref=args.base_ref))
+      graph_output = args.graph_output if mode != 'full' and args.mode != 'benchmark' else None
+      results.append(one(
+        mode, base_ref=args.base_ref, graph_output=graph_output,
+        graph_format=args.graph_format
+      ))
   for result in results:
     report(result)
 

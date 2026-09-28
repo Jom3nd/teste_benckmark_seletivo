@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+import networkx as nx
 
 from tools import analyzer
 
@@ -31,6 +32,100 @@ def test_relative_imports_reach_affected_tests(mini_project):
     assert paths['tests/test_service.py'] == [
         'src/pkg/model.py', 'src/pkg/service.py', 'tests/test_service.py'
     ]
+
+
+def test_export_dependency_graph_writes_dot_edges(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {
+            'src/pkg/service.py': {'src/pkg/model.py'},
+            'tests/test_service.py': {'src/pkg/service.py'},
+        },
+        '.cache/graph.dot',
+        'dot',
+    )
+
+    graph = output_path.read_text(encoding='utf-8')
+    assert node_count == 3
+    assert edge_count == 2
+    assert 'digraph dependencies {' in graph
+    assert 'src/pkg/service.py' in graph
+    assert 'shape=box' in graph
+    assert ' -> ' in graph
+
+
+def test_build_dependency_graph_uses_networkx_digraph(mini_project):
+    graph = analyzer.build_dependency_graph({
+        'src/pkg/service.py': {'src/pkg/model.py'},
+        'tests/test_service.py': {'src/pkg/service.py'},
+    })
+
+    assert isinstance(graph, nx.DiGraph)
+    assert graph.has_edge('tests/test_service.py', 'src/pkg/service.py')
+    assert graph.nodes['tests/test_service.py']['kind'] == 'test'
+    assert graph.nodes['tests/test_service.py']['group'] == 'Tests'
+    assert graph.nodes['src/pkg/model.py']['kind'] == 'source'
+
+
+def test_export_dependency_graph_renders_interactive_html(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {
+            'src/pkg/service.py': {'src/pkg/model.py'},
+            'tests/test_service.py': {'src/pkg/service.py'},
+        },
+        '.cache/graph.html',
+    )
+
+    rendered = output_path.read_text(encoding='utf-8')
+    assert node_count == 3
+    assert edge_count == 2
+    assert '<html>' in rendered
+    assert 'vis-network' in rendered
+    assert 'tests/test_service.py' in rendered
+    assert 'new vis.Network' in rendered
+    assert rendered.count('<h1>Python Dependency Graph</h1>') == 1
+
+
+def test_export_dependency_graph_writes_graphml(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {'tests/test_service.py': {'src/pkg/service.py'}},
+        '.cache/graph.graphml',
+        'graphml',
+    )
+
+    imported = nx.read_graphml(output_path)
+    assert node_count == 2
+    assert edge_count == 1
+    assert imported.has_edge('tests/test_service.py', 'src/pkg/service.py')
+
+
+def test_export_dependency_graph_writes_json_schema(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {'tests/test_service.py': {'src/pkg/service.py'}},
+        '.cache/graph.json',
+        'json',
+    )
+    import json
+
+    graph = json.loads(output_path.read_text(encoding='utf-8'))
+    assert node_count == 2
+    assert edge_count == 1
+    assert graph['edge_direction'] == 'importer_to_dependency'
+    assert graph['edges'] == [
+        {'from': 'tests/test_service.py', 'to': 'src/pkg/service.py'}
+    ]
+    assert graph['nodes'][0]['kind'] == 'source'
+
+
+def test_indexed_run_generates_graph_artifact(mini_project, monkeypatch):
+    monkeypatch.setattr(analyzer, 'changed', lambda base_ref=None: ['src/pkg/model.py'])
+
+    result = analyzer.one(
+        'indexed', execute=False, graph_output='.cache/generated.dot', graph_format='dot'
+    )
+
+    assert result['graph_edges'] >= 1
+    assert result['graph_output'].endswith('generated.dot')
+    assert (mini_project / '.cache' / 'generated.dot').exists()
 
 
 def test_git_diff_uses_base_and_includes_worktree_and_untracked(mini_project, monkeypatch):
