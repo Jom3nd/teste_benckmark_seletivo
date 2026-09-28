@@ -15,7 +15,8 @@ python -m pytest
 - Indexação AST dos arquivos Python em `src/` e `tests/`, incluindo imports absolutos e relativos.
 - Grafo direcionado de imports e grafo reverso para descobrir quem depende de um módulo alterado.
 - Busca em largura pelos dependentes e explicação textual do caminho até cada teste selecionado.
-- Exportação automática do grafo em Graphviz DOT durante execuções `indexed` e `selective`, além de exportação JSON sob demanda.
+- Grafo de dependências construído como `networkx.DiGraph` e visualização HTML interativa automática via PyVis durante execuções `indexed` e `selective`.
+- Exportação em PNG, DOT, JSON e GraphML para visualização ou integração com outras ferramentas.
 - Execução seletiva com pytest, com execução completa de fallback quando a seleção não é confiável.
 - Índice JSON persistente e versionado, carregado em mapas Python para consultas rápidas.
 - Modos de execução completa, análise AST sem cache, consulta indexada e benchmark comparativo.
@@ -33,7 +34,7 @@ O índice também guarda nomes de classes e funções encontrados pela AST. A se
 
 As alterações são filtradas para `.py`; uma mudança isolada em documentação ou configuração não resulta em uma seleção vazia silenciosa: o fallback executa a suíte completa.
 
-Por padrão, os modos `indexed` e `selective` geram `.cache/dependency-graph.dot`. Cada nó é um arquivo Python de `src/` ou `tests/`; arquivos de teste são caixas e arquivos de produção são elipses. As arestas apontam do importador para a dependência (`arquivo -> arquivo importado`), enquanto a seleção percorre o grafo no sentido inverso. O relatório mostra o caminho, a quantidade de nós e arestas e o local do arquivo gerado.
+Por padrão, os modos `indexed` e `selective` usam NetworkX para construir o `DiGraph` e PyVis para renderizar `.cache/dependency-graph.html`. Abra o HTML em um navegador: é possível ampliar, mover a visualização, arrastar nós e filtrar entre `Source` e `Tests`; passe o cursor sobre um nó para ver o caminho completo do arquivo. O JavaScript da visualização fica embutido no HTML, então não é necessário acessar CDN. Arquivos de teste aparecem como quadrados amarelos e arquivos de produção como pontos azuis. As arestas apontam do importador para a dependência (`arquivo -> arquivo importado`), enquanto a seleção percorre o grafo no sentido inverso. O relatório mostra a quantidade de nós e arestas e o local do arquivo gerado.
 
 ## Uso
 
@@ -50,8 +51,8 @@ Opções disponíveis:
 - `--mode indexed`: carrega ou atualiza `.cache/index.json` e é o modo padrão.
 - `--mode benchmark`: compara os modos `full`, `selective` e `indexed`.
 - `--base-ref REF`: usa `REF...HEAD` para identificar mudanças de commit.
-- `--graph-output PATH`: altera o caminho do grafo exportado; padrão `.cache/dependency-graph.dot`.
-- `--graph-format dot|json`: escolhe Graphviz DOT (padrão) ou JSON estruturado.
+- `--graph-output PATH`: altera o caminho do grafo exportado; padrão `.cache/dependency-graph.html`.
+- `--graph-format html|dot|json|graphml`: escolhe o formato visual ou de intercâmbio; padrão `html`.
 - `--repeat N`: número de repetições do benchmark, no mínimo 1.
 - `--results DIR`: diretório para os resultados JSON e CSV do benchmark; padrão `benchmark/results`.
 
@@ -69,13 +70,14 @@ Ele usa `indexed` por padrão. Pode-se definir `SELECTIVE_TEST_BASE`, `SELECTIVE
 SELECTIVE_TEST_BASE=origin/main bash scripts/test-selective.sh
 ```
 
-Para gerar JSON em vez de DOT:
+O modo padrão já gera o HTML interativo. Para gerar JSON estruturado ou GraphML para abrir em ferramentas como Gephi:
 
 ```sh
 python tools/analyzer.py --mode indexed --graph-format json --graph-output .cache/dependency-graph.json
+python tools/analyzer.py --mode indexed --graph-format graphml --graph-output .cache/dependency-graph.graphml
 ```
 
-O arquivo DOT pode ser renderizado com Graphviz, por exemplo `dot -Tsvg .cache/dependency-graph.dot -o .cache/dependency-graph.svg`. O modo `full` apenas executa pytest e não constrói o índice nem exporta o grafo.
+O formato DOT continua disponível para Graphviz. O modo `full` apenas executa pytest e não constrói o índice nem exporta o grafo.
 
 ## Índice incremental
 

@@ -12,6 +12,9 @@ import time
 from collections import deque
 from pathlib import Path, PurePosixPath
 
+import networkx as nx
+from pyvis.network import Network
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'src'
 TEST = ROOT / 'tests'
@@ -130,20 +133,61 @@ def _reverse_graph(dependencies):
   return reverse
 
 
-def export_dependency_graph(dependencies, output_path, graph_format='dot'):
+def build_dependency_graph(dependencies):
+  graph = nx.DiGraph()
+  for importer, imported in dependencies.items():
+    importer_kind = 'test' if importer.startswith('tests/') else 'source'
+    graph.add_node(
+      importer,
+      kind=importer_kind,
+      group='Tests' if importer_kind == 'test' else 'Source',
+      label=importer,
+      title=f'{importer_kind.title()} file: {importer}',
+      color='#f4b942' if importer_kind == 'test' else '#56b4d3',
+      shape='box' if importer_kind == 'test' else 'dot',
+    )
+    for dependency in imported:
+      dependency_kind = 'test' if dependency.startswith('tests/') else 'source'
+      graph.add_node(
+        dependency,
+        kind=dependency_kind,
+        group='Tests' if dependency_kind == 'test' else 'Source',
+        label=dependency,
+        title=f'{dependency_kind.title()} file: {dependency}',
+        color='#f4b942' if dependency_kind == 'test' else '#56b4d3',
+        shape='box' if dependency_kind == 'test' else 'dot',
+      )
+      graph.add_edge(importer, dependency)
+  return graph
+
+
+def _render_interactive_graph(graph, output_path):
+  heading = 'Python Dependency Graph'
+  network = Network(
+    height='100vh', width='100%', directed=True, bgcolor='#f7f9fc',
+    font_color='#17212b', cdn_resources='in_line', heading=heading,
+    select_menu=True, filter_menu=True,
+  )
+  network.from_nx(graph)
+  network.barnes_hut(
+    gravity=-8000, central_gravity=0.25, spring_length=170,
+    spring_strength=0.035, damping=0.12,
+  )
+  html = network.generate_html(notebook=False)
+  duplicate_heading = f'<center>\n<h1>{heading}</h1>\n</center>'
+  html = html.replace(duplicate_heading, '', 1)
+  output_path.write_text(html, encoding='utf-8')
+
+
+def export_dependency_graph(dependencies, output_path, graph_format='html'):
   output_path = Path(output_path)
   if not output_path.is_absolute():
     output_path = ROOT / output_path
   output_path.parent.mkdir(parents=True, exist_ok=True)
 
-  nodes = sorted(set(dependencies) | {
-    dependency for imported in dependencies.values() for dependency in imported
-  })
-  edges = sorted(
-    (importer, dependency)
-    for importer, imported in dependencies.items()
-    for dependency in imported
-  )
+  graph = build_dependency_graph(dependencies)
+  nodes = sorted(graph.nodes)
+  edges = sorted(graph.edges)
 
   if graph_format == 'json':
     graph = {
@@ -166,6 +210,10 @@ def export_dependency_graph(dependencies, output_path, graph_format='dot'):
       lines.append(f'  {identifiers[importer]} -> {identifiers[dependency]};')
     lines.append('}')
     output_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+  elif graph_format == 'graphml':
+    nx.write_graphml(graph, output_path)
+  elif graph_format == 'html':
+    _render_interactive_graph(graph, output_path)
   else:
     raise ValueError(f'Unsupported graph format: {graph_format}')
   return output_path, len(nodes), len(edges)
@@ -419,12 +467,12 @@ def main(argv=None):
   parser.add_argument('--mode', choices=['full', 'selective', 'indexed', 'benchmark'], default='indexed')
   parser.add_argument('--base-ref', help='Git ref or commit SHA used as the diff base')
   parser.add_argument(
-    '--graph-output', default='.cache/dependency-graph.dot',
-    help='Path for the generated dependency graph (default: .cache/dependency-graph.dot)'
+    '--graph-output', default='.cache/dependency-graph.html',
+    help='Path for the generated dependency graph (default: .cache/dependency-graph.html)'
   )
   parser.add_argument(
-    '--graph-format', choices=['dot', 'json'], default='dot',
-    help='Export format for the dependency graph'
+    '--graph-format', choices=['html', 'dot', 'json', 'graphml'], default='html',
+    help='Export format for the dependency graph (default: interactive HTML)'
   )
   parser.add_argument('--repeat', type=int, default=5)
   parser.add_argument('--results', default='benchmark/results')
