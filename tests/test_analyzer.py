@@ -33,6 +33,54 @@ def test_relative_imports_reach_affected_tests(mini_project):
     ]
 
 
+def test_export_dependency_graph_writes_dot_edges(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {
+            'src/pkg/service.py': {'src/pkg/model.py'},
+            'tests/test_service.py': {'src/pkg/service.py'},
+        },
+        '.cache/graph.dot',
+    )
+
+    graph = output_path.read_text(encoding='utf-8')
+    assert node_count == 3
+    assert edge_count == 2
+    assert 'digraph dependencies {' in graph
+    assert 'src/pkg/service.py' in graph
+    assert 'shape=box' in graph
+    assert ' -> ' in graph
+
+
+def test_export_dependency_graph_writes_json_schema(mini_project):
+    output_path, node_count, edge_count = analyzer.export_dependency_graph(
+        {'tests/test_service.py': {'src/pkg/service.py'}},
+        '.cache/graph.json',
+        'json',
+    )
+    import json
+
+    graph = json.loads(output_path.read_text(encoding='utf-8'))
+    assert node_count == 2
+    assert edge_count == 1
+    assert graph['edge_direction'] == 'importer_to_dependency'
+    assert graph['edges'] == [
+        {'from': 'tests/test_service.py', 'to': 'src/pkg/service.py'}
+    ]
+    assert graph['nodes'][0]['kind'] == 'source'
+
+
+def test_indexed_run_generates_graph_artifact(mini_project, monkeypatch):
+    monkeypatch.setattr(analyzer, 'changed', lambda base_ref=None: ['src/pkg/model.py'])
+
+    result = analyzer.one(
+        'indexed', execute=False, graph_output='.cache/generated.dot'
+    )
+
+    assert result['graph_edges'] >= 1
+    assert result['graph_output'].endswith('generated.dot')
+    assert (mini_project / '.cache' / 'generated.dot').exists()
+
+
 def test_git_diff_uses_base_and_includes_worktree_and_untracked(mini_project, monkeypatch):
     calls = []
 

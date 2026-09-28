@@ -130,6 +130,47 @@ def _reverse_graph(dependencies):
   return reverse
 
 
+def export_dependency_graph(dependencies, output_path, graph_format='dot'):
+  output_path = Path(output_path)
+  if not output_path.is_absolute():
+    output_path = ROOT / output_path
+  output_path.parent.mkdir(parents=True, exist_ok=True)
+
+  nodes = sorted(set(dependencies) | {
+    dependency for imported in dependencies.values() for dependency in imported
+  })
+  edges = sorted(
+    (importer, dependency)
+    for importer, imported in dependencies.items()
+    for dependency in imported
+  )
+
+  if graph_format == 'json':
+    graph = {
+      'directed': True,
+      'edge_direction': 'importer_to_dependency',
+      'nodes': [
+        {'id': node, 'kind': 'test' if node.startswith('tests/') else 'source'}
+        for node in nodes
+      ],
+      'edges': [{'from': importer, 'to': dependency} for importer, dependency in edges],
+    }
+    output_path.write_text(json.dumps(graph, indent=2), encoding='utf-8')
+  elif graph_format == 'dot':
+    identifiers = {node: f'node_{index}' for index, node in enumerate(nodes)}
+    lines = ['digraph dependencies {', '  rankdir=LR;', '  node [fontname="Arial"];']
+    for node in nodes:
+      shape = 'box' if node.startswith('tests/') else 'ellipse'
+      lines.append(f'  {identifiers[node]} [label={json.dumps(node)}, shape={shape}];')
+    for importer, dependency in edges:
+      lines.append(f'  {identifiers[importer]} -> {identifiers[dependency]};')
+    lines.append('}')
+    output_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+  else:
+    raise ValueError(f'Unsupported graph format: {graph_format}')
+  return output_path, len(nodes), len(edges)
+
+
 def parse_all():
   started = time.perf_counter()
   source_files = files()
@@ -293,7 +334,7 @@ def run_tests(selected=None):
   return (time.perf_counter() - started) * 1000, result.returncode
 
 
-def one(mode, execute=True, base_ref=None):
+def one(mode, execute=True, base_ref=None, graph_output=None, graph_format='dot'):
   started = time.perf_counter()
   changed_paths = changed(base_ref)
   all_tests = [key(path) for path in TEST.rglob('test_*.py')]
@@ -301,6 +342,7 @@ def one(mode, execute=True, base_ref=None):
   analyzed = 0
   paths = {}
   fallback = None
+  graph_stats = None
 
   if mode == 'full':
     selected = all_tests
@@ -311,7 +353,10 @@ def one(mode, execute=True, base_ref=None):
     else:
       index, timings, analyzed = load_or_update_index()
       discovery_ms, ast_ms, graph_ms, index_ms = timings
+      dependencies = index['deps']
       reverse = index['rev']
+    if graph_output:
+      graph_stats = export_dependency_graph(dependencies, graph_output, graph_format)
     if changed_paths:
       selected, paths, selection_ms = select(reverse, changed_paths)
     else:
@@ -339,6 +384,9 @@ def one(mode, execute=True, base_ref=None):
     'selected': selected,
     'paths': paths,
     'fallback': fallback,
+    'graph_output': str(graph_stats[0]) if graph_stats else None,
+    'graph_nodes': graph_stats[1] if graph_stats else 0,
+    'graph_edges': graph_stats[2] if graph_stats else 0,
     'test_exit': test_exit,
   }
 
@@ -356,6 +404,11 @@ def report(result):
     f"tests_time={result['test_ms']:.3f}ms exit={result['test_exit']} "
     f"total={result['total_ms']:.3f}ms"
   )
+  if result['graph_output']:
+    print(
+      f"Dependency graph: {result['graph_output']} "
+      f"({result['graph_nodes']} nodes, {result['graph_edges']} edges)"
+    )
   for test in result['selected']:
     if test in result['paths']:
       print('Reason: ' + ' -> '.join(result['paths'][test]))
@@ -365,6 +418,14 @@ def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('--mode', choices=['full', 'selective', 'indexed', 'benchmark'], default='indexed')
   parser.add_argument('--base-ref', help='Git ref or commit SHA used as the diff base')
+  parser.add_argument(
+    '--graph-output', default='.cache/dependency-graph.dot',
+    help='Path for the generated dependency graph (default: .cache/dependency-graph.dot)'
+  )
+  parser.add_argument(
+    '--graph-format', choices=['dot', 'json'], default='dot',
+    help='Export format for the dependency graph'
+  )
   parser.add_argument('--repeat', type=int, default=5)
   parser.add_argument('--results', default='benchmark/results')
   args = parser.parse_args(argv)
@@ -375,7 +436,11 @@ def main(argv=None):
   results = []
   for mode in modes:
     for _ in range(args.repeat if args.mode == 'benchmark' else 1):
-      results.append(one(mode, base_ref=args.base_ref))
+      graph_output = args.graph_output if mode != 'full' and args.mode != 'benchmark' else None
+      results.append(one(
+        mode, base_ref=args.base_ref, graph_output=graph_output,
+        graph_format=args.graph_format
+      ))
   for result in results:
     report(result)
 

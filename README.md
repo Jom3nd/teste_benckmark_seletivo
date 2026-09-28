@@ -97,6 +97,18 @@ python tools/generate_fixture.py --modules 100
 
 O gerador cria arquivos em `generated/`; esse diretório ainda não faz parte do escopo do indexador, que analisa `src/` e `tests/`.
 
+### Benchmark isolado com 10.000 testes
+
+`tools/benchmark_scale.py` cria um projeto sintético dentro de um diretório temporário, inicializa um repositório Git descartável e remove todo o fixture ao terminar. Não escreve em `src/`, `tests/` ou no índice do projeto. O teste compara a suíte completa, seleção com parse AST sem índice e seleção com índice incremental aquecido:
+
+```sh
+python tools/benchmark_scale.py --tests 10000 --test-files 100 --affected-files 10 --repeat 3
+```
+
+Parâmetros configuráveis: `--tests`, `--test-files`, `--affected-files` e `--repeat`. A medição atual usa casos distribuídos uniformemente em arquivos; uma alteração simulada afeta 10 dos 100 módulos de teste. A seleção opera por arquivo, não por caso individual.
+
+Na medição de referência em Windows, os tempos médios foram: suíte completa `7,45 s`; seleção sem índice `1,62 s`; seleção indexada e aquecida `1,35 s`. A construção inicial do índice levou `0,83 s`. Os modos seletivos executaram 1.000 dos 10.000 casos. Esses números descrevem somente este fixture e ambiente; a proporção de arquivos afetados, o custo dos testes, o sistema operacional e a frequência de reconstrução determinam o ganho em um projeto real. O primeiro índice é um custo de setup; os valores indexados representam atualizações posteriores.
+
 ## Limites e adaptação
 
 A análise é estática e baseada em imports entre arquivos. Imports dinâmicos, reflexão e dependências escolhidas em runtime não são inferidos. Apesar de classes e funções terem seus nomes armazenados, chamadas de funções, métodos, herança e uso de símbolos não formam arestas do grafo. O projeto atualmente atende projetos Python com `src/`, `tests/`, arquivos de teste `test_*.py` e pytest.
